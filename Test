@@ -1,0 +1,61 @@
+# One-time secure SAS token storage
+$secure = Read-Host "Paste your SAS token (starting with ?sv=...)" -AsSecureString
+$secure | ConvertFrom-SecureString | Set-Content "C:\secure\sastoken.txt"
+
+# === Configuration ===
+$StorageAccount = "<yourstorageaccount>"       # no https://
+$ContainerName  = "eventlogs"
+$BlobName       = "logs/eventlog.jsonl"
+$SasTokenPath   = "C:\secure\sastoken.txt"     # Encrypted SAS file
+$LogName        = "Application"                # Or: System, Security, etc.
+$Interval       = 30                           # Polling interval (seconds)
+
+# === Load Secure SAS Token ===
+if (-Not (Test-Path $SasTokenPath)) {
+    throw "SAS token file not found at $SasTokenPath. Please run secure save step first."
+}
+$SasSecure = Get-Content $SasTokenPath -Raw | ConvertTo-SecureString
+$SasToken = [System.Net.NetworkCredential]::new("", $SasSecure).Password
+
+# === Initialize ===
+$LastRecordId = 0
+
+while ($true) {
+    # Get new events
+    $events = Get-WinEvent -LogName $LogName | Where-Object {
+        $_.RecordId -gt $LastRecordId
+    }
+
+    if ($events.Count -gt 0) {
+        # Convert to NDJSON
+        $lines = foreach ($e in $events) {
+            [pscustomobject]@{
+                TimeCreated = $e.TimeCreated.ToUniversalTime().ToString("o")
+                Id          = $e.Id
+                Level       = $e.LevelDisplayName
+                Provider    = $e.ProviderName
+                Message     = $e.Message
+                RecordId    = $e.RecordId
+            } | ConvertTo-Json -Compress
+        }
+
+        $payload = ($lines -join "`n") + "`n"
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+
+        # Upload to Append Blob
+        $uri = "https://$StorageAccount.blob.core.windows.net/$ContainerName/$BlobName$SasToken&comp=appendblock"
+        Invoke-RestMethod -Uri $uri -Method Put `
+            -Headers @{
+                "x-ms-blob-type" = "AppendBlob"
+                "x-ms-version"   = "2020-10-02"
+                "x-ms-date"      = (Get-Date).ToUniversalTime().ToString("R")
+            } `
+            -ContentType "application/octet-stream" `
+            -Body $bytes
+
+        $LastRecordId = ($events | Select-Object -ExpandProperty RecordId | Measure-Object -Maximum).Maximum
+        Write-Host ("Uploaded {0} new events. Latest RecordId: {1}" -f $events.Count, $LastRecordId)
+    }
+
+    Start-Sleep -Seconds $Interval
+}
