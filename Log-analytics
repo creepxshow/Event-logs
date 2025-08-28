@@ -1,0 +1,38 @@
+# -------------------- CONFIGURATION --------------------
+$WorkspaceId = "<YOUR_WORKSPACE_ID>"     # Example: abcdef12-3456-7890-abcd-ef1234567890
+$WorkspaceKey = "<YOUR_WORKSPACE_KEY>"   # This is the primary key from Log Analytics Workspace
+$Region = "eastus"                        # Must match Azure region of the workspace
+# -------------------------------------------------------
+
+Write-Host "`n--- Azure Monitor Agent Setup ---`n"
+
+# Step 1: Download AMA Installer
+$installerPath = "$env:TEMP\InstallAzureMonitorAgent.exe"
+Write-Host "Downloading Azure Monitor Agent installer..."
+Invoke-WebRequest -Uri "https://aka.ms/InstallAzureMonitorAgentWindows" -OutFile $installerPath
+
+# Step 2: Install AMA silently
+Write-Host "Installing Azure Monitor Agent..."
+Start-Process -FilePath $installerPath -ArgumentList "/q" -Wait
+
+# Step 3: Register the machine with the workspace
+$amaCli = "$env:ProgramFiles\AzureMonitorAgent\AzureMonitorAgentInstaller.exe"
+
+if (-Not (Test-Path $amaCli)) {
+    Write-Error "Azure Monitor Agent CLI not found. Install may have failed."
+    exit 1
+}
+
+Write-Host "Connecting machine to Log Analytics Workspace..."
+Start-Process -FilePath $amaCli -ArgumentList "--add-workspace --workspace-id $WorkspaceId --workspace-key $WorkspaceKey --region $Region" -Wait
+
+# Step 4: Optional Verification
+Write-Host "`nVerifying installation and workspace connection..."
+$service = Get-Service -Name "MonitoringAgent" -ErrorAction SilentlyContinue
+if ($service.Status -eq "Running") {
+    Write-Host "✅ Azure Monitor Agent is running."
+} else {
+    Write-Warning "⚠️ Azure Monitor Agent service not running. Please check logs."
+}
+
+Write-Host "`n✅ Setup complete. Configure Data Collection Rules (DCR) in Azure to begin receiving logs."
